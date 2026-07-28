@@ -410,13 +410,32 @@ p_domain_global    = domain_total / 3213      # 3213 = sum of all sub_total
 lift               = p_domain_given_sub / p_domain_global
 ```
 Selection is **top-5 per subreddit by lift, minimum `count >= 5`** (5×8 + 2 = 42 rows;
-worldpolitics yields only 2). `sub_total` is **not** all posts — it is restricted to a
-hardcoded ~41-domain categorized universe totalling 3,213 posts (Anarchism contributes 101
-of its 839). `category` comes from a hand-written domain→category dict with values
-`Media / News`, `Advocacy / Org`, `Video`, `Government`. `PoliticalDiscussion` is absent.
+worldpolitics yields only 2). `count` matches a raw `(subreddit, domain)` groupby over the
+**8,567** set exactly (42/42).
 
-**This does not survive contact with live data** — new domains appear daily and fall
-outside the dict. See §10.
+⚠️ **`sub_total` is the one input that cannot be recovered.** It counts only posts whose
+domain is in a hand-curated allowlist of recognized media/advocacy/video/government
+domains — an **allowlist, not a blocklist**, and far larger than the 41 domains CTDD
+happens to expose (those are only the top-5 per subreddit). Proven by arithmetic:
+
+```
+worldpolitics sub_total = 28  = youtu.be(17) + youtube.com(11)
+    excluded: i.redd.it(759), a/b/c.l3n.co(101), redgifs.com(8), self.*(73)
+Anarchism sub_total = 101     = youtube.com(31) + youtu.be(28) + currentaffairs.org(15)
+                              + blackrosefed.org(11) + freedomnews.org.uk(8)
+                              + theanarchistlibrary.org(8)
+```
+
+Anarchism keeps 101 of its 394 link posts while politics keeps 744 of 990 — the list
+recognizes news outlets and ignores image hosts, link shorteners, and personal blogs.
+`PoliticalDiscussion` is absent entirely (all 116 of its posts are self-posts).
+Categories are `Media / News`, `Advocacy / Org`, `Video`, `Government`. Global total 3,213.
+
+**Consequence for testing:** the formulas above are verified, but `clean_top_distinctive_domains`
+and `echo_chamber_scores` **cannot be byte-reproduced** — their input dict is lost. These
+two artifacts get *formula-level* golden tests (given a fixed dict, does the arithmetic
+match?) rather than byte-equality. This is not a workaround: §10.1 replaces the dict by
+design, so exact historical reproduction was never the goal for these two.
 
 `echo_chamber_scores` ✅ verified to full float precision on all 9 rows:
 ```python
