@@ -9,7 +9,7 @@
 ## 1. Problem
 
 The dashboards present themselves as a narrative-intelligence platform but serve a
-frozen snapshot: 8,711 Reddit posts from 2024-07-23 to 2025-02-18 across 10 political
+frozen snapshot: 8,687 Reddit posts from 2024-07-23 to 2025-02-18 across 10 political
 subreddits, committed to `data/` as 27 pre-computed artifacts (~31 MB).
 
 Two things are missing:
@@ -125,6 +125,18 @@ Verified by column-level audit of every endpoint and frontend component.
 | `globe.duckdb` | globe `/events/{id}/analyze`, **geo cache** | `raw_posts, geo_resolutions, structured_events, news_articles, event_clusters` |
 | `ai_cache.json` | polar, globe, stream, perspective | shared LLM cache |
 
+**Two databases, not one.** Beyond `analysis_v2.db` (built by `patch_db.py` from 9 CSVs),
+`hybrid_chatbot/config.py:37` points at a second file, `data/hybrid_chatbot.duckdb`, which
+`sql_engine.py:67-78` builds at **startup** from its own 12-CSV `CSV_TABLES` map. All 12
+are already listed above, so the inventory is complete — but `sql_engine.py:70-72` only
+*logs a warning* on a missing CSV, so the chatbot degrades silently rather than failing.
+The ETL must satisfy both consumers.
+
+Also absent from `patch_db.py`'s `TABLES` but present in the committed DB: `bridge_authors`
+(← `bridge_authors_v2.csv`) and `media_flow` (← `subreddit_domain_flow_v2.csv`). Neither is
+queried by any code today, so this is latent rather than broken — but a rebuild-from-CSV
+drops them silently. Two lines in `patch_db.py:30-40` close the gap.
+
 ### 4.2 Confirmed dead — do not regenerate
 
 | Artifact | Size | Finding |
@@ -175,12 +187,19 @@ Regenerate both only when re-enabling those panels — and see landmine L1 first
 Each of these fails **silently**. They are the reason this design needs a golden-master
 test rather than a smoke test.
 
-**L1 — `.npy` positional alignment.** `title_embeddings_v2.npy` joins to
-`clean_posts.csv` by **row position**, with no id join. The files are *already*
-misaligned: 8,567 embeddings versus 8,711 rows. All three readers silently truncate to
-`min(len)` (`cluster_pipeline.py:100-104`, `db.py:353-354`). Any insertion, re-sort, or
-dedupe shifts every embedding onto the wrong post and mislabels all clusters with no
-error. If regenerated, both files must be emitted together in identical row order.
+**L1 — `.npy` positional alignment. Confirmed live: 120 posts currently hold the wrong
+embedding.** `title_embeddings_v2.npy` is `(8567, 384)` float32, L2-normalized, and aligns
+positionally to the **8,567-row `clean_with_clusters_v2` set** — *not* to the 8,687-row
+`clean_posts.csv` it is zipped against at `cluster_pipeline.py:100-104`, which truncates to
+`min(len)`. The 120-row difference is exactly the `[deleted]`-author rows dropped at
+clustering, and because they are interleaved rather than trailing, the misalignment
+propagates from the first one onward. Also `db.py:353-354`.
+
+Fix by carrying an explicit `id` array beside the matrix and joining on it. Note the
+original embedder was `all-MiniLM-L6-v2` (verified: unit-norm rows), whereas
+`streamgraph2/models/embedder.py:18` ships MD5 hash-embedding and `sentence-transformers`
+is not in `requirements.txt` — the two are not interchangeable. Since §6.2 dedupe needs no
+embeddings at all, this only affects the 5-way topic KMeans.
 
 **L2 — hardcoded cluster labels.** `cluster_pipeline.py:31-37` maps KMeans clusters 0–4
 to `US Politics, Geopolitics, Economy, Culture, Technology`, justified only by
@@ -274,42 +293,186 @@ No news keys means near-zero clusters, `status="complete"`, no new file, and
 
 All deterministic. No LLM, no network.
 
-**`transforms/dedupe.py`** → `clean_with_clusters_v2.csv`
-Assigns `duplicate_cluster_id` — the same story crossposted across subreddits. Hash-embed
-titles (`streamgraph2/models/embedder.py:18`, MD5 token hashing, 384-dim, no model
-download), block by domain first for O(n) per group, cosine-threshold, union-find. A
-*narrative* is a duplicate cluster.
+> **Provenance.** The original ETL is unrecoverable — it lived outside the repo at a path
+> that no longer exists (proven by absolute paths baked into the dead DuckDB views in
+> `analysis_v2.db`) and was never committed. `SimPPl.ipynb` is an 18-cell exploratory
+> scratchpad over a 535-post single-subreddit sample; it writes no artifacts and its
+> KMeans cell was aborted with `KeyboardInterrupt`. It is **not** the pipeline.
+>
+> Every formula below was instead recovered numerically — solved against the committed
+> CSVs until it reproduced them. Entries marked ✅ verified at **0 mismatches on all rows**.
 
-**`transforms/narratives.py`** → 4 artifacts
-`narrative_intelligence_summary` (`narrative_id = f"{cluster_id}_{primary_domain}"`,
-representative title = highest-scoring post), `narrative_topic_mapping`,
-`narrative_spread_chain_table` (subreddits ordered by first appearance),
-`graph_edge_intelligence_table` (one row per post, with `origin_subreddit` and
-`hours_from_origin`).
+### 6.0 The row-count cascade — get this wrong and everything downstream shifts
 
-**`transforms/ecosystem.py`** → 3 artifacts
-`subreddit_domain_flow_v2` (groupby count), `clean_top_distinctive_domains`
-(`lift = p(domain|sub) / p(domain)` — the formula is spelled out by the CSV's own
-columns), `echo_chamber_scores` (per-subreddit aggregate lift).
+| Stage | Rows | Filter |
+|---|---|---|
+| `data.jsonl` | 8,799 | — |
+| **`clean_posts.csv`** | **8,687** | drop `author == 'AutoModerator'` (exactly 112) ✅ |
+| **`posts`** = `clean_with_clusters_v2` = `.npy` | **8,567** | additionally drop `author == '[deleted]'` (exactly 120) ✅ |
 
-**`transforms/authors.py`** → 3 artifacts
-`bridge_authors_v2` (authors in ≥2 subreddits), `author_amplification_summary` (score
-relative to subreddit baseline), `author_influence_profile`.
+Different transforms read **different levels of this cascade**. This is the single
+easiest thing to get wrong:
 
-**`transforms/volume.py`** → `daily_volume_v2.csv`
-Post counts keyed by `created_datetime` date. Emits one row per calendar day in the
-window — the rolling window at `db.py:498-502` is row-based, not calendar-based, so
-missing days silently compress the baseline and inflate z-scores. An hourly series ships
-as a *new* file rather than a schema change to this one.
+- `ideological_distance_matrix` → built from **8,687** (909 domains). Building it from the
+  8,567 set gives 899 domains and only **10/45 rows correct**.
+- `daily_volume_v2`, `subreddit_domain_flow_v2` → built from **8,567**. `daily_volume`
+  matches the 8,567 groupby on 201/201 days, but `clean_posts` on only 130/201.
 
-**`transforms/chatbot.py`** → `narrative_registry`, `narrative_diffusion_table`,
-`subreddit_intelligence_summary`.
+### 6.1 `normalize.py` → `clean_posts.csv`
 
-Coverage check: `clean_posts.csv` from `normalize.py`, plus 15 derived across the five
-transform modules = all 16 required CSVs.
+`pd.json_normalize` the `data` object of each `t3` record, drop `AutoModerator`, project 10
+columns. `created_datetime = pd.to_datetime(created_utc, unit="s")`, naive UTC, formatted
+`%Y-%m-%d %H:%M:%S`.
 
-`spread_strength` and the echo-chamber lift aggregation are not fully determined by
-column names and require reverse-engineering — validated by the golden-master test.
+**`domain` is Reddit's own server-computed field — copy it verbatim.** It is *not*
+`urlparse(url).netloc`, which differs on **4,940 of 8,687 rows** (57%). Reddit emits
+`self.<Subreddit>` for text posts, `i.redd.it`/`v.redd.it` for native media, bare host
+otherwise. Read `submission.domain`; never recompute it. `[deleted]` authors pass through
+unchanged at this stage.
+
+### 6.2 `dedupe.py` → `clean_with_clusters_v2.csv`
+
+**There is no similarity threshold. Clusters are groups of byte-identical titles.**
+Measured: minimum intra-cluster cosine similarity is exactly **1.0** for every one of the
+131 clusters, and no cluster contains more than one distinct title. The spec previously
+described embedding + cosine threshold + union-find; that was wrong. No embeddings are
+required for this step at all.
+
+`duplicate_cluster_id` is a float, null for singletons — 285 non-null rows across 131
+clusters, ids dense `0..130`.
+
+⚠️ **Not fully recovered.** Grouping all 8,567 posts by exact title with size > 1 yields
+546 posts / 249 groups; the committed set is a 285/131 subset. Restricting to
+cross-subreddit gives 381/182 — still not a match. One additional filter remains unknown.
+Pin this before shipping (see §10).
+
+### 6.3 `narratives.py` → 4 artifacts
+
+`graph_edge_intelligence_table` (285 rows, **one row per post, not per edge**) is the
+parent; the other three derive from it grouped by `narrative_id`.
+
+```python
+narrative_id      = f"{cluster_id}_{domain}"          # ✅ 131 clusters → 154 narrative_ids
+origin_subreddit  = subreddit of earliest post in group                        # ✅
+hours_from_origin = (created_datetime - group.min()) / 3600                    # ✅
+```
+
+62 clusters span multiple domains — that expansion is exactly why every Gen-B narrative
+table has 154 rows.
+
+`narrative_intelligence_summary` ✅ all columns verified:
+```python
+total_posts = count(*);  unique_subreddits = nunique(subreddit);  unique_authors = nunique(author)
+first_seen = min(created_datetime);  last_seen = max(created_datetime)
+representative_title = arg_max(title, score)          # title of the highest-scoring post
+spread_strength      = total_posts * unique_subreddits
+```
+The `_x`/`_y` suffix pairs are **100% identical** on all 154 rows — a vestigial pandas
+self-merge. Production reads only `_x`. Emit both for byte-compatibility (L3).
+
+`narrative_spread_chain_table` ✅ — **duplicates are retained**:
+```python
+df.sort_values("created_datetime").groupby("narrative_id")["subreddit"].apply(list)
+# serialized via Python str(list):  "['democrats', 'politics']"
+```
+Deduplicating by first appearance produces **41 mismatches** (e.g. `103_vox.com` is
+`['politics', 'politics']`). The earlier "ordered by first appearance" claim was wrong.
+
+`narrative_topic_mapping` ✅ — `topic_label = "LABEL_ME_" + str(topic_cluster)`, with
+`topic_cluster ∈ {0..4}` from `KMeans(n_clusters=5, random_state=42)` over representative-
+title embeddings. **These are placeholders; no LLM ever ran.** Workflow C completes work
+that was specced and abandoned, rather than reproducing lost behaviour.
+
+### 6.4 `ecosystem.py` → 3 artifacts
+
+`subreddit_domain_flow_v2` ✅ — `groupby(["subreddit","domain"]).size()` over the 8,567 set.
+
+`clean_top_distinctive_domains` ✅ formulas, ⚠️ hardcoded universe:
+```python
+p_domain_given_sub = count / sub_total
+p_domain_global    = domain_total / 3213      # 3213 = sum of all sub_total
+lift               = p_domain_given_sub / p_domain_global
+```
+Selection is **top-5 per subreddit by lift, minimum `count >= 5`** (5×8 + 2 = 42 rows;
+worldpolitics yields only 2). `sub_total` is **not** all posts — it is restricted to a
+hardcoded ~41-domain categorized universe totalling 3,213 posts (Anarchism contributes 101
+of its 839). `category` comes from a hand-written domain→category dict with values
+`Media / News`, `Advocacy / Org`, `Video`, `Government`. `PoliticalDiscussion` is absent.
+
+**This does not survive contact with live data** — new domains appear daily and fall
+outside the dict. See §10.
+
+`echo_chamber_scores` ✅ verified to full float precision on all 9 rows:
+```python
+clean_top_distinctive_domains.groupby("subreddit")["lift"].mean()
+```
+Because it averages an already-top-5-truncated list, the score is highly sensitive to how
+many domains clear the `count >= 5` gate — worldpolitics scores 9.19 off just two domains.
+
+### 6.5 `authors.py` → 3 artifacts
+
+`bridge_authors_v2` — authors active in ≥2 subreddits, one row per (author, subreddit).
+178 rows / 86 authors.
+
+`author_influence_profile` ✅ — solved by coefficient search, 0/3,598 mismatches:
+```python
+final_influence_score = (total_amplification_generated / 100.0
+                         + narratives_transported * 2
+                         + avg_ideological_distance_crossed * 5)
+```
+Coefficients 1, 2, 3, 10 on the distance term all fail; only **5** fits every row. 3,511 of
+3,598 authors have `avg_ideological_distance_crossed == 0.0`, which is why the term hides.
+
+`amplification_percentage` ✅ — `(after - before) / before * 100`, with `before == 0 → 0.0`
+(exactly the 72 apparent outliers).
+
+⚠️ **`author_amplification_summary.csv` is stale and must be recomputed, not copied.** Its
+65 authors all exist in `amplification_event_table`, but the summed
+`total_relative_amplification` matches for **0 of 65**.
+
+### 6.6 `volume.py` → `daily_volume_v2.csv`
+
+```python
+posts.groupby(posts["created_datetime"].dt.date).size()      # ✅ 201/201 days
+```
+Calendar-day bins on naive UTC, over the **8,567** set. **Only days with ≥1 post are
+emitted** — 201 rows across a 211-day range, so 10 days are silently absent. The earlier
+"one row per calendar day" claim was wrong.
+
+This is precisely what corrupts the row-based rolling window at `db.py:498-502`. Since the
+live window is 7 days, a single missing day is a 14% baseline distortion. **Reindex to a
+complete date range with zero-fill at read time**, or accept inflated z-scores.
+
+### 6.7 `ideological.py` → `ideological_distance_matrix.csv`
+
+✅ 45/45 exact, max error 0.0:
+```python
+M = clean_posts.pivot_table(index="subreddit", columns="domain",
+                            values="id", aggfunc="count").fillna(0)   # raw counts
+ideological_distance = 1 - cosine_similarity(M[a], M[b])
+```
+All 10 subreddits → C(10,2) = 45 unordered pairs, upper triangle, `subreddit_a` <
+`subreddit_b` alphabetically. Built from **8,687** (see §6.0). Binary and log1p vectors are
+decisively ruled out (max error 0.84 and 0.72).
+
+Currently loaded into DuckDB and never queried (§4.2) — regenerate only if a consumer appears.
+
+### 6.8 `chatbot.py` → `narrative_registry`, `narrative_diffusion_table`, `subreddit_intelligence_summary`
+
+⚠️ **These are Gen-A artifacts from an older, incompatible run.** Gen-A uses float ids
+(`0.0_salon.com`), Gen-B uses int (`0_salon.com`), and their `narrative_id` overlap is
+**zero rows**. Production bridges with `str(nid).replace(".0_", "_")` (L4). Gen-A also did
+not require ≥2 posts — 598 of its 1,055 narratives are singletons.
+
+Regenerating these in Gen-B format is the correct fix, but it changes every id the chatbot
+sees. See §10.
+
+`subreddit_intelligence_summary`: `domain` is a **stringified Python list** of the top-3
+domains — same `str(list)` hazard as `spread_sequence`.
+
+### Coverage
+
+`clean_posts.csv` from §6.1, plus 15 derived across §6.2–6.8 = all 16 required CSVs.
 
 ---
 
@@ -318,11 +481,17 @@ column names and require reverse-engineering — validated by the golden-master 
 ### Golden-master test — the primary correctness mechanism
 
 Run the new ETL over the committed `clean_posts.csv` and assert it reproduces the
-committed derived CSVs. 8,711 real posts with known-correct outputs already sit in git.
+committed derived CSVs. 8,687 real posts with known-correct outputs already sit in git —
+and `_original_pipeline/data.jsonl` provides the 8,799-record raw input *upstream* of them,
+so the fetcher's normalization can be tested end-to-end too.
 
-This does three jobs: proves the reverse-engineered formulas correct, guards every future
+This does three jobs: proves the recovered formulas correct, guards every future
 regression, and lets the entire ETL be built and validated **before writing any
 Reddit-fetching code**.
+
+Every ✅ formula in §6 already passes this test at 0 mismatches. The golden master's job is
+now to *keep* them passing — plus pin the two that remain unsolved (§6.2 dedupe subset,
+`author_amplification_summary`).
 
 ### Supporting tests
 
@@ -371,7 +540,42 @@ Phases 1–3 deliver the core ask. 4–6 are polish.
 
 ## 10. Open items
 
-- `spread_strength` and echo-chamber lift formulas to be pinned by golden-master.
-- Reddit listing strategy per subreddit: `new` paginated versus `top?t=day` union. `new` is chronologically complete but caps at ~1000; the union covers high-volume subreddits like r/politics.
-- Whether to fix L12 (`backend/database.py` view/table conflict) or disable that code path outright.
-- `narrative_registry` id format: normalize to `0_` and fix the silent lookup miss at `vector_store.py:222-256`, or preserve `0.0_` for compatibility.
+**Resolved by the forensic pass** (see §6): `spread_strength`, echo-chamber lift, the
+ideological-distance metric, `narrative_id` construction, `final_influence_score`
+coefficients, and the dedupe mechanism are all now verified rather than open. The Reddit
+listing question is also settled — 9 of 10 subreddits sit at ~1,000 posts in the original
+dump, the listing pagination ceiling, so the `top?t=day` union is required, not optional.
+
+Still genuinely open:
+
+**1. The hardcoded domain→category dict (blocking).** `clean_top_distinctive_domains`
+restricts its universe to ~41 hand-categorized domains (§6.4), and `echo_chamber_scores`
+is the mean of top-5 lifts within it. On live data new domains appear daily and fall
+outside the dict, so the echo-chamber score silently changes meaning day to day. Options:
+freeze the dict and let uncategorized domains drop out (stable but increasingly
+unrepresentative); expand it nightly via LLM in Workflow C (accurate, adds a dependency to
+a number that is currently deterministic); or drop categorization and compute lift over all
+domains (changes every historical value). **Unresolved — a real design decision, not a
+detail.** Note the frontend already expects category names (`News, Blogs, Advocacy,
+Research, Government`, `PolarizeTreemap.jsx:26-32`) that do not match the data's
+(`Media / News`, `Advocacy / Org`) — a pre-existing bug to fix alongside.
+
+**2. Gen-A artifacts.** `narrative_registry`, `narrative_diffusion_table`,
+`author_influence_profile`, `amplification_event_table`, `user_intelligence_summary`, and
+`author_amplification_summary` come from an older run using float ids, with **zero**
+`narrative_id` overlap with the Gen-B tables (§6.8). `author_amplification_summary` does
+not even reconcile with its own source (0/65). Regenerate all in Gen-B format and drop the
+`.replace(".0_", "_")` bridge, or keep emitting the legacy format? Regeneration is correct
+but changes every id the chatbot indexes.
+
+**3. The dedupe subset filter (blocking §6.2).** Exact-title grouping yields 546 posts /
+249 clusters; the committed artifacts hold 285/131. Cross-subreddit restriction gives
+381/182. One filter is still unidentified. Must be pinned before the golden master can pass.
+
+**4. `backend/database.py`.** Confirmed broken beyond repair-by-column-rename: it selects
+`title`, `domains`, `top_subreddits`, `top_authors` from a CSV that has none of them, opens
+the DB read-write, and creates *views* over names `patch_db.py` creates as *tables* —
+DuckDB views **do** persist across connections (proven by the recovered DB), so a "fix"
+would replace `narratives` with a view exposing `internal_system_id` and break all 12
+`networkgraph` join sites. No module imports it. **Recommend deletion**, along with
+`backend/hybrid/`, `backend/hybrid_crew/`, and the commented-out `main.py:1-453`.

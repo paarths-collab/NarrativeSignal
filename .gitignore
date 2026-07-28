@@ -72,6 +72,10 @@ tmp_*.json
 output_brief.txt
 test_brief.json
 
+# Recovered original ETL pipeline — reference material, not source.
+# Holds the raw 45MB data.jsonl and assorted personal files. Never commit.
+_original_pipeline/
+
 # Large raw data (essential small DBs are tracked)
 raw_data/
 logs/
