@@ -2,6 +2,7 @@
 .env
 .venv
 .venv/
+.venv-etl/
 backend/.venv/
 env/
 venv/

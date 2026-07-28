@@ -31,7 +31,7 @@ def test_deleted_authors_are_preserved(sample):
 
 def test_domain_is_copied_not_derived(sample):
     """Self-posts carry 'self.<Subreddit>', which urlparse could never produce."""
-    selfies = sample[sample.domain.str.startswith("self.")]
+    selfies = sample[sample.domain.str.startswith("self.", na=False)]
     assert len(selfies) > 0
     assert selfies.url.str.contains("reddit.com").all()
 
