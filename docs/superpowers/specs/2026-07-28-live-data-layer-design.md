@@ -330,21 +330,37 @@ columns. `created_datetime = pd.to_datetime(created_utc, unit="s")`, naive UTC, 
 otherwise. Read `submission.domain`; never recompute it. `[deleted]` authors pass through
 unchanged at this stage.
 
-### 6.2 `dedupe.py` → `clean_with_clusters_v2.csv`
+### 6.2 `dedupe.py` → `clean_with_clusters_v2.csv` ✅ EXACT
 
-**There is no similarity threshold. Clusters are groups of byte-identical titles.**
-Measured: minimum intra-cluster cosine similarity is exactly **1.0** for every one of the
-131 clusters, and no cluster contains more than one distinct title. The spec previously
-described embedding + cosine threshold + union-find; that was wrong. No embeddings are
-required for this step at all.
+**There is no similarity threshold. Clusters are groups of byte-identical titles posted
+by at least two different authors.** Fully reproduced — identical post-id set:
 
-`duplicate_cluster_id` is a float, null for singletons — 285 non-null rows across 131
-clusters, ids dense `0..130`.
+```python
+# NOTE: runs on clean_posts (8,687) — BEFORE the [deleted] filter
+g = clean_posts.groupby("title")
+clustered = clean_posts[(g["id"].transform("size")    > 1) &
+                        (g["author"].transform("nunique") > 1)]     # 131 groups / 286 posts
+# cluster ids assigned in ALPHABETICAL title order (pandas groupby sorts keys)  ✅ 131/131
+clustered["duplicate_cluster_id"] = factorize_alphabetically(clustered["title"])
+posts = clustered[clustered.author != "[deleted]"]                  # → 285 posts / 131 clusters ✅
+```
 
-⚠️ **Not fully recovered.** Grouping all 8,567 posts by exact title with size > 1 yields
-546 posts / 249 groups; the committed set is a 285/131 subset. Restricting to
-cross-subreddit gives 381/182 — still not a match. One additional filter remains unknown.
-Pin this before shipping (see §10).
+The **≥2 distinct authors** condition is the whole discriminator: of the 243 non-self
+exact-title groups, all 112 excluded have exactly one author and all 131 kept have two or
+more — perfect separation, no exceptions either way. Semantically it is the right rule: a
+narrative is one headline posted by *different people*. One person crossposting themselves
+is not spread. Excluded single-author groups have a median time span of **70 seconds**
+versus 5 hours for kept ones — they are near-simultaneous self-crossposts.
+
+A self-post exclusion is **redundant** — 0 of the 131 surviving groups contain a
+`self.*` domain, because identical self-post titles are always by the same author.
+
+Two consequences of the ordering:
+- Clustering **precedes** the `[deleted]` filter, so one cluster (id 83) is left a
+  singleton when its only sibling is dropped. `duplicate_cluster_id` is therefore *not* a
+  guarantee of ≥2 surviving posts. Do not assume it downstream.
+- No embeddings are required for this step at all. The earlier "embed + cosine threshold +
+  union-find" description was wrong on every count.
 
 ### 6.3 `narratives.py` → 4 artifacts
 
@@ -548,31 +564,49 @@ dump, the listing pagination ceiling, so the `top?t=day` union is required, not 
 
 Still genuinely open:
 
-**1. The hardcoded domain→category dict (blocking).** `clean_top_distinctive_domains`
-restricts its universe to ~41 hand-categorized domains (§6.4), and `echo_chamber_scores`
-is the mean of top-5 lifts within it. On live data new domains appear daily and fall
-outside the dict, so the echo-chamber score silently changes meaning day to day. Options:
-freeze the dict and let uncategorized domains drop out (stable but increasingly
-unrepresentative); expand it nightly via LLM in Workflow C (accurate, adds a dependency to
-a number that is currently deterministic); or drop categorization and compute lift over all
-domains (changes every historical value). **Unresolved — a real design decision, not a
-detail.** Note the frontend already expects category names (`News, Blogs, Advocacy,
-Research, Government`, `PolarizeTreemap.jsx:26-32`) that do not match the data's
-(`Media / News`, `Advocacy / Org`) — a pre-existing bug to fix alongside.
+**~~1. The hardcoded domain→category dict.~~ DECIDED — grow it nightly, cached.**
+`clean_top_distinctive_domains` restricted its universe to ~41 hand-categorized domains
+(§6.4), which does not survive live data. Resolution:
 
-**2. Gen-A artifacts.** `narrative_registry`, `narrative_diffusion_table`,
-`author_influence_profile`, `amplification_event_table`, `user_intelligence_summary`, and
-`author_amplification_summary` come from an older run using float ids, with **zero**
-`narrative_id` overlap with the Gen-B tables (§6.8). `author_amplification_summary` does
-not even reconcile with its own source (0/65). Regenerate all in Gen-B format and drop the
-`.replace(".0_", "_")` bridge, or keep emitting the legacy format? Regeneration is correct
-but changes every id the chatbot indexes.
+```
+new domain → in domain_categories.json?  ── yes → use cached category (free)
+                                         └─ no  → one LLM call → append → never asked again
+```
 
-**3. The dedupe subset filter (blocking §6.2).** Exact-title grouping yields 546 posts /
-249 clusters; the committed artifacts hold 285/131. Cross-subreddit restriction gives
-381/182. One filter is still unidentified. Must be pinned before the golden master can pass.
+The cache persists on the `data-live` branch beside the artifacts, mirroring the existing
+`ai_cache.json` pattern. Cost decays fast: ~200 calls in week one, a handful per day by
+week three, since the political web has a long tail but a small head. Well inside free-tier
+limits (Groq allows 14,400 requests/day; the full nightly job needs ~180).
 
-**4. `backend/database.py`.** Confirmed broken beyond repair-by-column-rename: it selects
+Two consequences to accept:
+- `sub_total`'s denominator (currently the hardcoded `3213`) grows as the dict grows, so
+  every subreddit's echo-chamber score shifts even when behaviour does not. This is
+  correct — "distinctive versus everything observed" rather than "versus 41 sites chosen
+  once" — but scores will not be comparable to the currently deployed values.
+- A number that is deterministic today acquires an LLM dependency. Mitigate by treating
+  categorization failures as non-blocking: an uncategorized domain falls back to `Other`
+  and is retried the next night, never blocking the run.
+
+Fix alongside: the frontend expects category names (`News, Blogs, Advocacy, Research,
+Government`, `PolarizeTreemap.jsx:26-32`) that do not match the data's (`Media / News`,
+`Advocacy / Org`). Pre-existing bug; the new categorizer should emit the frontend's
+vocabulary.
+
+**~~2. Gen-A artifacts.~~ DECIDED — regenerate in Gen-B format.** `narrative_registry`,
+`narrative_diffusion_table`, `author_influence_profile`, `amplification_event_table`,
+`user_intelligence_summary`, and `author_amplification_summary` came from an older run
+using float ids with **zero** `narrative_id` overlap with Gen-B (§6.8), and
+`author_amplification_summary` did not reconcile with its own source (0/65). All six are
+regenerated from the same run as everything else. The `.replace(".0_", "_")` bridge (L4)
+becomes dead code and should be removed along with them. Consequence: every `narrative_id`
+the chatbot indexes changes, so `hybrid_vector_meta.jsonl` must be rebuilt in the same pass.
+
+**~~3. The dedupe subset filter.~~ SOLVED — see §6.2.** The discriminator is **≥2 distinct
+authors** per title group. Verified by perfect separation across all 243 candidate groups
+and an identical post-id set against the committed artifact. Cluster numbering is
+alphabetical by title (131/131). Nothing remains open here.
+
+**2. `backend/database.py`.** Confirmed broken beyond repair-by-column-rename: it selects
 `title`, `domains`, `top_subreddits`, `top_authors` from a CSV that has none of them, opens
 the DB read-write, and creates *views* over names `patch_db.py` creates as *tables* —
 DuckDB views **do** persist across connections (proven by the recovered DB), so a "fix"
