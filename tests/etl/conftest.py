@@ -1,4 +1,11 @@
-"""Golden-master fixtures: the committed CSVs are the known-good oracle."""
+"""Golden-master fixtures: the committed CSVs are the known-good oracle.
+
+These fixtures are session-scoped: every test in the run shares the same
+DataFrame objects. Treat them as read-only — copy before mutating
+(`df.copy()`, avoid `inplace=True` or column assignment on the fixture
+itself). Mutating a shared fixture corrupts it for every later test and
+produces order-dependent failures.
+"""
 import pandas as pd
 import pytest
 

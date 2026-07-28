@@ -17,6 +17,7 @@ CLEAN_POSTS_COLUMNS = [
 
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Row-count cascade filters (spec §6.0)
-EXCLUDED_AUTHORS_CLEAN = ["AutoModerator"]
-EXCLUDED_AUTHORS_POSTS = ["[deleted]"]
+# Row-count cascade filters (spec §6.0). Do not swap these — each belongs to a
+# specific stage, and using the wrong one silently changes the row count.
+EXCLUDED_AUTHORS_CLEAN = ["AutoModerator"]   # normalize.py: raw 8,799 -> clean_posts 8,687
+EXCLUDED_AUTHORS_POSTS = ["[deleted]"]       # dedupe.py:    clean_posts 8,687 -> posts 8,567
