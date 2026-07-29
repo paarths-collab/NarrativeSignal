@@ -69,3 +69,15 @@ jobs:
 
       - name: Publish to data-live
         run: bash scripts/publish_to_data_live.sh artifacts data-live
+
+      - name: Trigger Render redeploy
+        env:
+          HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK not set; skipping redeploy trigger"
+            exit 0
+          fi
+          # Deploy hooks accept a POST with no body; response is JSON with a deploy id
+          curl -fsS -X POST "$HOOK_URL"
+          echo

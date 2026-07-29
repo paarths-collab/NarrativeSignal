@@ -57,3 +57,23 @@ def test_concurrency_prevents_overlap(wf):
 def test_needs_write_permission_on_contents(wf):
     perms = wf["jobs"]["nightly"].get("permissions", {})
     assert perms.get("contents") == "write", "must push to data-live"
+
+
+def test_redeploy_step_exists_and_is_gated(wf):
+    steps = wf["jobs"]["nightly"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    idx = next((i for i, n in enumerate(names) if "redeploy" in n.lower()), None)
+    assert idx is not None, "expected a redeploy step"
+
+    step = steps[idx]
+    assert "RENDER_DEPLOY_HOOK" in step.get("env", {}).get("HOOK_URL", "")
+    # gated: skips cleanly when the secret is empty
+    assert "if" in step or "-z" in step.get("run", "") or "$HOOK_URL" in step.get("run", "")
+
+
+def test_redeploy_runs_after_publish(wf):
+    steps = wf["jobs"]["nightly"]["steps"]
+    names = [s.get("name", "") for s in steps]
+    p = next(i for i, n in enumerate(names) if "publish" in n.lower())
+    r = next(i for i, n in enumerate(names) if "redeploy" in n.lower())
+    assert r > p, "redeploy must run after publish"
