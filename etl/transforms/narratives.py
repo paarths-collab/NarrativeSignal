@@ -1,4 +1,8 @@
 """Narrative-level transforms (spec §6.3)."""
+import hashlib
+import re
+
+import numpy as np
 import pandas as pd
 
 GRAPH_EDGE_COLUMNS = [
@@ -66,3 +70,65 @@ def build_narrative_summary(edges: pd.DataFrame) -> pd.DataFrame:
 
     out["spread_strength"] = out["total_posts_x"] * out["unique_subreddits_x"]
     return out[SUMMARY_COLUMNS]
+
+
+_EMBED_DIM = 384
+
+
+def build_spread_chains(edges: pd.DataFrame) -> pd.DataFrame:
+    """narrative_spread_chain_table: subreddits in chronological order.
+
+    Duplicates are RETAINED — '103_vox.com' is ['politics', 'politics']. Serialized
+    with Python str(list) because backend/networkgraph/routers/subreddit.py:390
+    parses exactly that shape and silently yields nothing otherwise.
+    """
+    sequences = (
+        edges.sort_values("created_datetime")
+        .groupby("narrative_id")["subreddit"]
+        .apply(list)
+    )
+    return pd.DataFrame(
+        {"narrative_id": sequences.index, "spread_sequence": sequences.map(str).values}
+    )
+
+
+def _hash_embed(text: str) -> np.ndarray:
+    """Deterministic offline embedding, mirroring streamgraph2/models/embedder.py.
+
+    The original pipeline used all-MiniLM-L6-v2, which needs a model download. Topic
+    ids therefore differ from the committed file by design; only the *shape* of
+    narrative_topic_mapping is contractual, and a later workflow replaces the labels.
+    """
+    vec = np.zeros(_EMBED_DIM, dtype="float32")
+    for token in re.findall(r"[a-z0-9]+", str(text).lower()):
+        if len(token) < 2:
+            continue
+        vec[int(hashlib.md5(token.encode()).hexdigest(), 16) % _EMBED_DIM] += 1.0
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm else vec
+
+
+def build_topic_mapping(
+    edges: pd.DataFrame, n_clusters: int = 5, seed: int = 42
+) -> pd.DataFrame:
+    """narrative_topic_mapping with LABEL_ME_* placeholders.
+
+    The committed labels are placeholders for a step that was specced and never run.
+    """
+    from sklearn.cluster import KMeans
+
+    best = (
+        edges.loc[edges.groupby("narrative_id")["score"].idxmax()]
+        .set_index("narrative_id")["title"]
+        .sort_index()
+    )
+    matrix = np.vstack([_hash_embed(t) for t in best])
+    labels = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10).fit_predict(matrix)
+
+    return pd.DataFrame(
+        {
+            "narrative_id": best.index,
+            "topic_cluster": labels,
+            "topic_label": ["LABEL_ME_" + str(c) for c in labels],
+        }
+    ).reset_index(drop=True)
