@@ -19,6 +19,16 @@ step 3.)
 1. https://console.groq.com → API Keys → **Create API Key**
 2. Copy immediately; it is shown only once
 
+**What this unlocks:** `GROQ_API_KEY` gates the nightly `enrich` job (see
+`docs/daily-refresh-runbook.md` → Enrichment). Without it, the site still works end
+to end, but two artifacts stay visibly degraded: `narrative_topic_mapping.csv` keeps
+its `LABEL_ME_2`-style placeholder labels instead of real cluster names, and
+`domain_categories.json` stops growing, so newly-seen domains drift into whatever
+default bucket the legacy vocab maps them to on the polarization dashboard. With it
+set, `enrich` runs after every successful `nightly` job, categorizes new domains,
+replaces the `LABEL_ME_*` placeholders with real labels, and re-publishes — both
+artifacts carry fresh, correct content each morning.
+
 ## 3. Set the four GitHub secrets
 
 https://github.com/paarths-collab/NarrativeSignal/settings/secrets/actions →
@@ -49,7 +59,10 @@ resolution) makes any Nominatim calls if the value is missing or generic. This
 secret is optional in the sense that its absence doesn't break the nightly ETL —
 but it does gate the globe run (see `docs/superpowers/plans/2026-07-29-globe-pipeline.md`
 Task 4), which is skipped cleanly if either `GROQ_API_KEY` or `GLOBE_NOMINATIM_UA`
-is unset.
+is unset. Without it, the globe step is skipped cleanly and the frontend shows the
+previous day's `global_events_latest.json` (or the empty-with-`reason` placeholder from
+Task 1 if no prior file exists) — see `docs/daily-refresh-runbook.md`'s "Globe pipeline"
+section for verification steps.
 
 ## 4. Initialize the data-live branch (once)
 
@@ -81,3 +94,18 @@ gh workflow run nightly-etl --repo paarths-collab/NarrativeSignal \
 
 Then follow `docs/daily-refresh-runbook.md` to confirm the run succeeded, `data-live`
 was updated, and a container reboot picks up the new artifacts.
+
+## 6. Optional: Render deploy hook
+
+Without this, `data-live` will be updated nightly but your container will only see the new
+data on its next natural restart. Setting this triggers an immediate redeploy after each
+successful publish — ~30 seconds of downtime at 03:15 UTC, and your site is fresh.
+
+1. Render dashboard → your service → **Settings** → **Deploy Hook**
+2. Copy the URL (it embeds a per-service token; treat it like a credential)
+3. GitHub → **Settings → Secrets → Actions → New repository secret**:
+   - Name: `RENDER_DEPLOY_HOOK`
+   - Value: the URL from step 2
+
+If you skip this, everything else still works — you just get a stale site until the
+container is bounced.
