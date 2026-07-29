@@ -18,7 +18,7 @@ concurrency:
 jobs:
   nightly:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: write   # needed to force-push data-live
     env:
@@ -26,6 +26,7 @@ jobs:
       REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
       REDDIT_USER_AGENT:    ${{ secrets.REDDIT_USER_AGENT }}
       GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
+      GLOBE_NOMINATIM_UA:   ${{ secrets.GLOBE_NOMINATIM_UA }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,6 +65,33 @@ jobs:
           "
           date -u +%Y-%m-%dT%H:%M:%SZ > artifacts/generated_at.txt
 
+      - name: Run globe pipeline (best-effort)
+        continue-on-error: true
+        env:
+          GLOBE_NOMINATIM_UA: ${{ secrets.GLOBE_NOMINATIM_UA }}
+        working-directory: backend/globe
+        run: |
+          if [ -z "$GLOBE_NOMINATIM_UA" ]; then
+            echo "GLOBE_NOMINATIM_UA not set; skipping globe pipeline"
+            exit 0
+          fi
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "GROQ_API_KEY not set; skipping globe pipeline"
+            exit 0
+          fi
+          python run_full_pipeline.py
+          ls -la outputs/
+      - name: Copy globe output into artifacts
+        run: |
+          if ls backend/globe/outputs/global_events_*.json >/dev/null 2>&1; then
+            cp backend/globe/outputs/global_events_*.json artifacts/
+            LATEST=$(ls -t backend/globe/outputs/global_events_*.json | head -1)
+            cp "$LATEST" artifacts/global_events_latest.json
+            echo "copied $(basename $LATEST) and global_events_latest.json"
+          else
+            echo "no globe output; latest.json will be missing (validator handles this)"
+          fi
+
       - name: Validate artifacts
         run: python -m scripts.validate_artifacts artifacts
 
@@ -81,3 +109,50 @@ jobs:
           # Deploy hooks accept a POST with no body; response is JSON with a deploy id
           curl -fsS -X POST "$HOOK_URL"
           echo
+
+  enrich:
+    needs: nightly
+    if: ${{ secrets.GROQ_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - name: Checkout live-data-layer for code
+        uses: actions/checkout@v4
+        with:
+          ref: live-data-layer
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime deps
+        run: pip install -r requirements.txt
+
+      - name: Fetch data-live artifacts
+        run: |
+          mkdir -p artifacts
+          curl -fsSL "https://api.github.com/repos/${{ github.repository }}/tarball/data-live" -o data-live.tar.gz
+          tar -xzf data-live.tar.gz -C artifacts --strip-components=1
+
+      - name: Run enrichment
+        run: python -m enrich all --in artifacts --out artifacts
+
+      - name: Re-publish to data-live
+        run: bash scripts/publish_to_data_live.sh artifacts data-live
+
+      - name: Trigger Render redeploy
+        env:
+          HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK not set; skipping redeploy trigger"
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK_URL"

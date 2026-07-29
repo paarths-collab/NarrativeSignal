@@ -77,3 +77,53 @@ def test_redeploy_runs_after_publish(wf):
     p = next(i for i, n in enumerate(names) if "publish" in n.lower())
     r = next(i for i, n in enumerate(names) if "redeploy" in n.lower())
     assert r > p, "redeploy must run after publish"
+
+
+def test_enrich_job_exists_and_needs_nightly(wf):
+    assert "enrich" in wf["jobs"]
+    assert wf["jobs"]["enrich"]["needs"] == "nightly"
+
+
+def test_enrich_gated_on_groq_key(wf):
+    if_ = wf["jobs"]["enrich"].get("if", "")
+    assert "GROQ_API_KEY" in if_
+
+
+def test_enrich_wires_groq_and_gemini(wf):
+    env = wf["jobs"]["enrich"].get("env", {})
+    assert "GROQ_API_KEY" in env
+    assert "GEMINI_API_KEY" in env
+
+
+def test_enrich_publishes_and_redeploys(wf):
+    steps = wf["jobs"]["enrich"]["steps"]
+    names = [s.get("name", "").lower() for s in steps]
+    assert any("publish" in n or "data-live" in n for n in names)
+    assert any("redeploy" in n for n in names)
+
+
+def test_nightly_timeout_covers_globe(wf):
+    """Globe adds ~25 min; timeout must accommodate."""
+    assert wf["jobs"]["nightly"]["timeout-minutes"] >= 45
+
+
+def test_globe_step_is_best_effort(wf):
+    steps = wf["jobs"]["nightly"]["steps"]
+    names = [s.get("name", "").lower() for s in steps]
+    globe_idx = next((i for i, n in enumerate(names) if "globe" in n), None)
+    assert globe_idx is not None
+    assert steps[globe_idx].get("continue-on-error") is True
+
+
+def test_globe_wires_nominatim_ua(wf):
+    env = wf["jobs"]["nightly"].get("env", {})
+    assert "GLOBE_NOMINATIM_UA" in env
+
+
+def test_globe_runs_before_validate(wf):
+    steps = wf["jobs"]["nightly"]["steps"]
+    names = [s.get("name", "").lower() for s in steps]
+    g = next(i for i, n in enumerate(names) if "globe" in n and "copy" not in n)
+    v = next(i for i, n in enumerate(names) if "validate" in n)
+    c = next(i for i, n in enumerate(names) if "copy globe" in n)
+    assert g < c < v, "globe runs, then copy to artifacts, then validate"
