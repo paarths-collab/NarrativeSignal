@@ -2,7 +2,9 @@
 
 Four GitHub Actions secrets must be set on `paarths-collab/NarrativeSignal` before
 the nightly refresh workflow can succeed. This is a one-time, ~10-minute task and
-is the ONLY manual step in the entire live-data-layer rollout.
+is the ONLY manual step in the entire live-data-layer rollout. (A fifth,
+`GLOBE_NOMINATIM_UA`, gates the optional globe run — see the note at the end of
+step 3.)
 
 ## 1. Reddit app
 
@@ -28,6 +30,7 @@ https://github.com/paarths-collab/NarrativeSignal/settings/secrets/actions →
 | `REDDIT_CLIENT_SECRET` | from step 1 |
 | `REDDIT_USER_AGENT` | `narrativesignal/1.0 by u/<your-reddit-username> (contact: <your-email>)` |
 | `GROQ_API_KEY` | from step 2 |
+| `GLOBE_NOMINATIM_UA` (optional) | `narrativesignal-globe/1.0 by u/<your-reddit-username> (contact: <your-email>)` |
 
 The User-Agent format matters. Reddit rate-limits generic UAs, and the fetcher
 refuses to run with a placeholder value — `load_user_agent()` in `fetcher/config.py`
@@ -35,6 +38,18 @@ rejects any value containing `python:asyncpraw`, `changeme`, or `default`
 (case-insensitive) with a `RuntimeError` before a single request is made. Use the
 real format above, with your actual Reddit username and contact email filled in —
 not a copy-pasted generic string.
+
+The globe pipeline's geocoding step needs the same treatment: set
+`GLOBE_NOMINATIM_UA` to `narrativesignal-globe/1.0 by u/<your-reddit-username>
+(contact: <your-email>)`. Nominatim's usage policy requires a contactable
+User-Agent on every request; `get_nominatim_user_agent()` in
+`backend/globe/app/pipeline/geo_resolver.py` shares the exact same generic-value
+guard (via `fetcher.config._load_ua_from_env`) and raises before Layer 3 (geo
+resolution) makes any Nominatim calls if the value is missing or generic. This
+secret is optional in the sense that its absence doesn't break the nightly ETL —
+but it does gate the globe run (see `docs/superpowers/plans/2026-07-29-globe-pipeline.md`
+Task 4), which is skipped cleanly if either `GROQ_API_KEY` or `GLOBE_NOMINATIM_UA`
+is unset.
 
 ## 4. Initialize the data-live branch (once)
 

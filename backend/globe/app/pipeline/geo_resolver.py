@@ -44,6 +44,23 @@ _ABSTRACT_GEO_TERMS = {
 }
 
 
+def get_nominatim_user_agent() -> str:
+    """Load and validate `GLOBE_NOMINATIM_UA` before any Nominatim traffic goes out.
+
+    Nominatim's usage policy requires a contactable User-Agent; sending a generic
+    one risks the whole pipeline getting rate-limited or blocked. Reuses the same
+    reject-generic-UA guard `fetcher.config.load_user_agent` applies to
+    `REDDIT_USER_AGENT`, so both products fail fast with the same message shape.
+
+    Imported lazily so this module doesn't take a hard dependency on the
+    `fetcher` package at import time (this pipeline can run standalone without
+    the fetcher/etl tree present, e.g. in a slimmer deployment).
+    """
+    from fetcher.config import _load_ua_from_env
+
+    return _load_ua_from_env("GLOBE_NOMINATIM_UA", "narrativesignal-globe")
+
+
 async def _fallback_resolve_from_terms(candidate: GeoCandidate) -> Optional[ResolvedLocation]:
     terms = [str(t).strip() for t in (candidate.detected_geo_terms or []) if str(t).strip()]
     for term in terms:
@@ -153,6 +170,9 @@ def _get_cached_resolution(post_id: str) -> Optional[ResolvedLocation]:
 async def resolve_all_candidates(
     candidates: List[GeoCandidate],
 ) -> List[tuple[GeoCandidate, ResolvedLocation]]:
+    # Fail fast: refuse to hit Nominatim without a contactable User-Agent.
+    get_nominatim_user_agent()
+
     results = []
     skipped = 0
 
