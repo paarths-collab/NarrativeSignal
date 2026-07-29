@@ -83,3 +83,6 @@ logs/
 temp/
 *.duckdb
 *.duckdb.wal
+
+# Fetcher outputs — always regenerated
+fetcher_out/
