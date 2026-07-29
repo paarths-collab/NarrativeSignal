@@ -37,6 +37,10 @@ TABLES = {
     "ideological_matrix": "ideological_distance_matrix.csv",
     "posts": "clean_posts.csv",
     "subreddit_edges": "graph_edge_intelligence_table.csv",
+    # Present in the committed DB but previously unmapped, so a rebuild-from-CSV
+    # dropped them silently. Neither is queried today; both are cheap to keep.
+    "bridge_authors": "bridge_authors_v2.csv",
+    "media_flow": "subreddit_domain_flow_v2.csv",
 }
 
 
