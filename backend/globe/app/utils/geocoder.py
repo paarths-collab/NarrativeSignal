@@ -48,12 +48,20 @@ async def geocode_location(name: str) -> Optional[dict]:
     if normalized in _geo_cache:
         return _geo_cache[normalized]
 
+    # Lazy import: avoids a circular import (geo_resolver imports this module) and
+    # avoids checking GLOBE_NOMINATIM_UA at module-load time. Called outside the
+    # try/except below so the guard's RuntimeError propagates instead of being
+    # swallowed as a "geocode failed" warning.
+    from app.pipeline.geo_resolver import get_nominatim_user_agent
+
+    user_agent = get_nominatim_user_agent()
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 "https://nominatim.openstreetmap.org/search",
                 params={"q": normalized, "format": "json", "limit": 1},
-                headers={"User-Agent": "simppl-globe/1.0"},
+                headers={"User-Agent": user_agent},
             )
             await asyncio.sleep(1)  # Nominatim rate limit
 

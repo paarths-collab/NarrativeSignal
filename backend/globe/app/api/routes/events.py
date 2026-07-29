@@ -288,6 +288,14 @@ async def get_location_news(payload: LocationNewsRequest):
     Fetch location-aware news based on clicked map coordinates.
     Returns normalized article fields expected by the globe frontend panel.
     """
+    # Lazy import + call outside the try/except below: avoids a hard dependency
+    # on the pipeline package at module-load time, and ensures a missing/generic
+    # GLOBE_NOMINATIM_UA fails fast instead of being swallowed as a "reverse
+    # geocoding failed" warning (see app.pipeline.geo_resolver.get_nominatim_user_agent).
+    from app.pipeline.geo_resolver import get_nominatim_user_agent
+
+    nominatim_user_agent = get_nominatim_user_agent()
+
     async with httpx.AsyncClient(timeout=20.0) as client:
         city = None
         state = None
@@ -303,7 +311,7 @@ async def get_location_news(payload: LocationNewsRequest):
                     "format": "jsonv2",
                     "addressdetails": 1,
                 },
-                headers={"User-Agent": "narrativesignal-globe/1.0"},
+                headers={"User-Agent": nominatim_user_agent},
                 timeout=5.0
             )
             if reverse.status_code == 200:
