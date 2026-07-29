@@ -76,103 +76,25 @@ def _dedup_news_records(records: list[dict], limit: int) -> list[dict]:
             break
     return list(dedup.values())
 
-# ── Mock data (used when no pipeline output exists yet) ───────────────────────
-_MOCK_EVENTS = [
-    {
-        "id": "mock-tel-aviv",
-        "title": "Tel Aviv, Israel — Escalating",
-        "locations": [{"name": "Tel Aviv, Israel", "lat": 32.09, "lon": 34.78, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.72,
-        "sentiment": "negative",
-        "risk_level": "High",
-        "confidence": "Medium",
-        "summary": "Regional conflict escalation with cross-border exchange. Diplomatic channels under strain.",
-        "strategic_implications": ["Escalation of regional conflict", "Disruption to energy markets", "Civilian displacement risk"],
-        "reddit_metrics": {"total_score": 10116, "total_comments": 3419, "post_count": 4, "subreddits": ["worldnews", "news"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-    {
-        "id": "mock-tehran",
-        "title": "Tehran, Iran — Escalating",
-        "locations": [{"name": "Tehran, Iran", "lat": 35.69, "lon": 51.39, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.69,
-        "sentiment": "neutral",
-        "risk_level": "High",
-        "confidence": "Medium",
-        "summary": "Diplomatic shift following leadership transition. Strategic realignment underway.",
-        "strategic_implications": ["Potential US-Iran conflict escalation", "Regional alliance shifts", "Nuclear programme uncertainty"],
-        "reddit_metrics": {"total_score": 1627, "total_comments": 236, "post_count": 2, "subreddits": ["worldnews"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-    {
-        "id": "mock-kyiv",
-        "title": "Kyiv, Ukraine — Active",
-        "locations": [{"name": "Kyiv, Ukraine", "lat": 50.45, "lon": 30.52, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.81,
-        "sentiment": "negative",
-        "risk_level": "High",
-        "confidence": "High",
-        "summary": "Ongoing conflict with sustained infrastructure targeting. Western aid discussions ongoing.",
-        "strategic_implications": ["Energy infrastructure at risk", "Western alliance cohesion tested", "Refugee flows increasing"],
-        "reddit_metrics": {"total_score": 22000, "total_comments": 7800, "post_count": 9, "subreddits": ["worldnews", "europe", "geopolitics"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-    {
-        "id": "mock-beijing",
-        "title": "Beijing, China — Monitoring",
-        "locations": [{"name": "Beijing, China", "lat": 39.91, "lon": 116.39, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.55,
-        "sentiment": "neutral",
-        "risk_level": "Medium",
-        "confidence": "Medium",
-        "summary": "Trade tension signals emerging. Policy statements indicate strategic posturing.",
-        "strategic_implications": ["Supply chain disruption risk", "Taiwan strait tensions", "Tech sector decoupling"],
-        "reddit_metrics": {"total_score": 5400, "total_comments": 1200, "post_count": 3, "subreddits": ["worldnews", "asia"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-    {
-        "id": "mock-washington",
-        "title": "Washington D.C., USA — Active",
-        "locations": [{"name": "Washington D.C., USA", "lat": 38.90, "lon": -77.04, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.63,
-        "sentiment": "neutral",
-        "risk_level": "Medium",
-        "confidence": "High",
-        "summary": "Policy shifts on foreign aid and military posture generating international attention.",
-        "strategic_implications": ["NATO commitment uncertainty", "Foreign aid reallocation", "Diplomatic repositioning"],
-        "reddit_metrics": {"total_score": 18000, "total_comments": 5500, "post_count": 7, "subreddits": ["worldnews", "news", "worldpolitics"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-    {
-        "id": "mock-nairobi",
-        "title": "Nairobi, Kenya — Emerging",
-        "locations": [{"name": "Nairobi, Kenya", "lat": -1.29, "lon": 36.82, "geo_type": "city", "display_name": ""}],
-        "impact_score": 0.38,
-        "sentiment": "neutral",
-        "risk_level": "Low",
-        "confidence": "Low",
-        "summary": "Economic instability and social unrest indicators detected. Monitoring escalation potential.",
-        "strategic_implications": ["Regional stability risk", "Humanitarian aid access"],
-        "reddit_metrics": {"total_score": 840, "total_comments": 102, "post_count": 1, "subreddits": ["worldnews"]},
-        "news_sources": [],
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    },
-]
+# ── No mock fallback ──────────────────────────────────────────────────────────
+# The previous version of this module fell back to 6 hardcoded events
+# (Tel Aviv / Tehran / Kyiv / ...) whenever no ``global_events_<date>.json`` was
+# present. That fallback (landmine L13) rendered convincingly real data and hid
+# the fact that the daily pipeline had stopped running. Removed on purpose —
+# callers of ``load_latest_output()`` must handle a missing payload explicitly
+# so that a broken pipeline surfaces as an empty response instead of silently
+# looking healthy.
+_NO_DATA_REASON = "no data available"
 
 
-def _mock_data_payload():
-    """Return a mock output payload matching the real pipeline structure."""
+def _empty_data_payload() -> dict:
+    """Payload shape used when no pipeline output exists (no fake events)."""
     return {
-        "run_id": "mock-000",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "event_count": len(_MOCK_EVENTS),
-        "events": _MOCK_EVENTS,
-        "_is_mock": True,
+        "run_id": None,
+        "generated_at": None,
+        "event_count": 0,
+        "events": [],
+        "reason": _NO_DATA_REASON,
     }
 
 
@@ -272,7 +194,7 @@ async def get_events(
     limit: int = Query(50, ge=1, le=200),
 ):
     """Return the latest processed map events."""
-    data = load_latest_output() or _mock_data_payload()
+    data = load_latest_output() or _empty_data_payload()
     events = data.get("events", [])
 
     if risk_level:
@@ -285,17 +207,24 @@ async def get_events(
     events.sort(key=lambda e: e.get("impact_score", 0), reverse=True)
     events = events[:limit]
 
-    return {
+    response: dict = {
         "generated_at": data.get("generated_at"),
         "total": len(events),
         "events": events,
     }
+    # Surface a machine-readable reason when the pipeline output is missing so
+    # a broken daily run is visible to callers instead of silently returning
+    # an empty (previously mocked) list.
+    reason = data.get("reason")
+    if reason:
+        response["reason"] = reason
+    return response
 
 
 @router.get("/summary")
 async def get_summary():
     """High-level summary of current global event landscape."""
-    data = load_latest_output() or _mock_data_payload()
+    data = load_latest_output() or _empty_data_payload()
     events = data.get("events", [])
     risk_dist = {"Low": 0, "Medium": 0, "High": 0}
     sentiment_dist = {}
@@ -323,7 +252,7 @@ async def get_summary():
 @router.get("/map")
 async def get_map_data():
     """Optimised payload for frontend globe rendering."""
-    data = load_latest_output() or _mock_data_payload()
+    data = load_latest_output() or _empty_data_payload()
     map_pins = []
     for e in data.get("events", []):
         for loc in e.get("locations", []):
@@ -391,7 +320,7 @@ async def get_location_news(payload: LocationNewsRequest):
         # try to find the nearest cluster/event to inherit its title/location
         event_matching_name = None
         if not city and not country:
-            data = load_latest_output() or _mock_data_payload()
+            data = load_latest_output() or _empty_data_payload()
             # Find closest pin
             best_dist = 2.0 # degrees tolerance
             for e in data.get("events", []):
@@ -458,7 +387,7 @@ async def get_location_news(payload: LocationNewsRequest):
 
     # Fallback to pipeline-attached news when external fetches return empty.
     if not dedup:
-        data = load_latest_output() or _mock_data_payload()
+        data = load_latest_output() or _empty_data_payload()
         for event in data.get("events", []):
             for ns in (event.get("news_sources") or []):
                 url = (ns.get("url") or "").strip()
@@ -650,7 +579,7 @@ async def event_analysis_workflow(
     Reuses existing event lookup + news analysis pipeline and adds structured
     Reddit context extraction + aggregated AI report.
     """
-    data = load_latest_output() or _mock_data_payload()
+    data = load_latest_output() or _empty_data_payload()
     event = next((e for e in data.get("events", []) if e.get("id") == event_id), None)
     if not event:
         raise HTTPException(404, f"Event '{event_id}' not found.")
@@ -751,7 +680,7 @@ Rules:
 @router.get("/{event_id}")
 async def get_event_detail(event_id: str):
     """Full detail for a single event cluster."""
-    data = load_latest_output() or _mock_data_payload()
+    data = load_latest_output() or _empty_data_payload()
     for event in data.get("events", []):
         if event.get("id") == event_id:
             return event
@@ -767,7 +696,7 @@ async def global_ai_analysis():
     Comprehensive Groq-powered intelligence report across all current events.
     Synthesises Reddit signal, news sources, risk levels and impact scores.
     """
-    data   = load_latest_output() or _mock_data_payload()
+    data   = load_latest_output() or _empty_data_payload()
     events = data.get("events", [])
 
     if not settings.GROQ_API_KEY:
@@ -853,7 +782,7 @@ async def event_news_analysis(
     3. Results merged, deduplicated, trusted-source flagged.
     Returns: topic_sentences + articles (with source, trusted flag, snippet).
     """
-    data  = load_latest_output() or _mock_data_payload()
+    data  = load_latest_output() or _empty_data_payload()
     event = next((e for e in data.get("events", []) if e.get("id") == event_id), None)
     if not event:
         raise HTTPException(404, f"Event '{event_id}' not found.")
@@ -1021,7 +950,7 @@ async def event_ai_analysis(event_id: str):
     Uses all available event context: location, risk, sentiment, Reddit metrics,
     news sources, summary and strategic implications.
     """
-    data  = load_latest_output() or _mock_data_payload()
+    data  = load_latest_output() or _empty_data_payload()
     event = next((e for e in data.get("events", []) if e.get("id") == event_id), None)
     if not event:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
