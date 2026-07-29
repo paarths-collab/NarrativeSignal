@@ -515,13 +515,28 @@ Currently loaded into DuckDB and never queried (§4.2) — regenerate only if a 
 
 ### 6.8 `chatbot.py` → `narrative_registry`, `narrative_diffusion_table`, `subreddit_intelligence_summary`
 
-⚠️ **These are Gen-A artifacts from an older, incompatible run.** Gen-A uses float ids
-(`0.0_salon.com`), Gen-B uses int (`0_salon.com`), and their `narrative_id` overlap is
-**zero rows**. Production bridges with `str(nid).replace(".0_", "_")` (L4). Gen-A also did
-not require ≥2 posts — 598 of its 1,055 narratives are singletons.
+⚠️ **Gen-A used float ids** (`0.0_salon.com`) against the current integer form
+(`0_salon.com`), so the raw `narrative_id` overlap is **zero rows**. Production bridges with
+`str(nid).replace(".0_", "_")` (L4).
 
-Regenerating these in Gen-B format is the correct fix, but it changes every id the chatbot
-sees. See §10.
+**Correction — Gen-A's 1,055 narratives are not a different clustering.** Measured: only
+**154** of those rows carry a float cluster id; the other **901** have `cluster_id == domain`
+and ids of the form `11alive.com_11alive.com`. Gen-A ran its aggregation over all 8,687
+clean posts and gave every *unclustered* post a `domain_domain` pseudo-narrative. Its 154
+real rows match the regenerated registry on **all 7 columns** after `.0_` → `_`. So the id
+format changed and nothing else did — the earlier claim that Gen-A "did not require ≥2
+posts" was wrong.
+
+All three artifacts were subsequently reconciled exactly (see §6.8 notes): registry
+1055/1055 on every column, `subreddit_intelligence_summary` 9/9 on all 7, and
+`user_intelligence_summary`'s duplicate-post half 192/192.
+
+Two rules only visible through that reconciliation, both load-bearing:
+- Registry `representative_title` is the **first post in table order**, not the max-score
+  post `narrative_intelligence_summary` uses. Max-score fits only 816/1055. The two tables
+  genuinely disagree on titles for the same narrative — preserved deliberately.
+- `most_common_domain` and the top-3 `domain` list break ties **alphabetically**;
+  `value_counts()` ordering fits only 183/192 and 6/9 respectively.
 
 `subreddit_intelligence_summary`: `domain` is a **stringified Python list** of the top-3
 domains — same `str(list)` hazard as `spread_sequence`.
