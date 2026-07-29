@@ -12,6 +12,7 @@ pgvector==0.2.5
 pandas==2.2.3
 numpy==1.26.4
 pyarrow
+tenacity==9.0.0
 
 # ── Embeddings / NLP ────────────────────────────────────────────
 faiss-cpu==1.8.0.post1
