@@ -1,0 +1,71 @@
+name: nightly-etl
+
+on:
+  schedule:
+    # 03:15 UTC — after most subreddits' daily activity has settled
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "UTC calendar day to fetch (YYYY-MM-DD, default yesterday)"
+        required: false
+        type: string
+
+concurrency:
+  group: nightly-etl
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # needed to force-push data-live
+    env:
+      REDDIT_CLIENT_ID:     ${{ secrets.REDDIT_CLIENT_ID }}
+      REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+      REDDIT_USER_AGENT:    ${{ secrets.REDDIT_USER_AGENT }}
+      GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime deps
+        run: |
+          pip install -r requirements.txt
+
+      - name: Fetch yesterday
+        run: |
+          mkdir -p out
+          DATE="${{ inputs.date || '' }}"
+          if [ -z "$DATE" ]; then
+            python -m fetcher fetch --out out/day.jsonl
+          else
+            python -m fetcher fetch --date "$DATE" --out out/day.jsonl
+          fi
+          wc -l out/day.jsonl
+
+      - name: Run ETL
+        run: |
+          mkdir -p artifacts
+          python -c "
+          from pathlib import Path
+          from etl.normalize import normalize_listing
+          from etl.pipeline import run_pipeline
+          clean = normalize_listing(Path('out/day.jsonl'))
+          run_pipeline(clean, Path('artifacts'),
+                       categories_path=Path('data/domain_categories.json'))
+          "
+          date -u +%Y-%m-%dT%H:%M:%SZ > artifacts/generated_at.txt
+
+      - name: Validate artifacts
+        run: python -m scripts.validate_artifacts artifacts
+
+      - name: Publish to data-live
+        run: bash scripts/publish_to_data_live.sh artifacts data-live
