@@ -32,3 +32,29 @@ def golden_clusters() -> pd.DataFrame:
 def golden_posts(golden_clusters) -> pd.DataFrame:
     """The 8,567 set without the cluster column."""
     return golden_clusters.drop(columns=["duplicate_cluster_id"])
+
+
+@pytest.fixture(scope="session")
+def sample_diffusion(golden_clean_posts):
+    from etl.transforms.authors import build_diffusion_table
+    from etl.transforms.dedupe import build_clusters_table
+    from etl.transforms.narratives import build_graph_edges
+
+    return build_diffusion_table(build_graph_edges(build_clusters_table(golden_clean_posts)))
+
+
+@pytest.fixture(scope="session")
+def sample_events(golden_clean_posts):
+    from etl.transforms.authors import build_amplification_events, build_diffusion_table
+    from etl.transforms.dedupe import build_clusters_table
+    from etl.transforms.narratives import build_graph_edges
+
+    edges = build_graph_edges(build_clusters_table(golden_clean_posts))
+    return build_amplification_events(build_diffusion_table(edges), edges)
+
+
+@pytest.fixture(scope="session")
+def sample_distances(golden_clean_posts):
+    from etl.transforms.ideological import build_ideological_matrix
+
+    return build_ideological_matrix(golden_clean_posts)

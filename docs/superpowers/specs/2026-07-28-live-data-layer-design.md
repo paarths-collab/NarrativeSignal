@@ -450,14 +450,34 @@ many domains clear the `count >= 5` gate — worldpolitics scores 9.19 off just 
 `bridge_authors_v2` — authors active in ≥2 subreddits, one row per (author, subreddit).
 178 rows / 86 authors.
 
-`author_influence_profile` ✅ — solved by coefficient search, 0/3,598 mismatches:
+`author_influence_profile` ✅ — **fully reproduced, all 6 columns at 3,598 of 3,598.**
+Originally assumed unrecoverable (Gen-A); the whole construction was later solved:
+
 ```python
-final_influence_score = (total_amplification_generated / 100.0
-                         + narratives_transported * 2
-                         + avg_ideological_distance_crossed * 5)
+# universe = the diffusion table's authors, NOT the event table's
+total_posts                      = per-author row count in the post table
+narratives_transported           = diffusion.groupby(author).narrative_id.nunique()
+avg_ideological_distance_crossed = mean pairwise distance across the DISTINCT
+                                   subreddits the author posts in; 0.0 below two
+total_amplification_generated    = per-author event sum, 0.0 where no events
+final_influence_score            = (total_amplification_generated / 100.0
+                                    + narratives_transported * 2
+                                    + avg_ideological_distance_crossed * 5)
 ```
+
+Two traps here, both of which produced plausible wrong answers before being caught:
+
+- **The universe is the diffusion table, not the events table.** 1,767 of 3,598 authors
+  appear in no amplification event yet carry a nonzero `narratives_transported`. Deriving
+  from events alone under-covers by ~3× and fails silently — the score formula still
+  validates against whatever rows it is handed.
+- **`avg_ideological_distance_crossed` is a *bridge span*, not a hop average.** It is the
+  mean pairwise distance across the subreddits an author posts in — nothing to do with the
+  hops in the event table. Decisive evidence: exactly 87 authors post in ≥2 subreddits and
+  exactly 87 have a nonzero value, and **8 of those 87 appear in no event at all**.
+
 Coefficients 1, 2, 3, 10 on the distance term all fail; only **5** fits every row. 3,511 of
-3,598 authors have `avg_ideological_distance_crossed == 0.0`, which is why the term hides.
+3,598 authors score 0.0 on that term, which is why it hides.
 
 `amplification_percentage` ✅ — `(after - before) / before * 100`, with `before == 0 → 0.0`
 (exactly the 72 apparent outliers).
