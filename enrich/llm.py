@@ -1,7 +1,8 @@
-"""Constrained-output LLM classifier with Groq primary + Gemini failover.
+"""Constrained-output and free-form LLM helpers, Groq primary + Gemini failover.
 
 Public surface:
     classify(prompt: str, choices: list[str]) -> str
+    generate(prompt: str, *, max_words: int = 4) -> str
     ClassifyError
 
 Behavior:
@@ -9,11 +10,16 @@ Behavior:
       chat-completions endpoint.
     * On HTTP 429 or 5xx from Groq, falls back to Gemini
       (gemini-2.5-flash generateContent).
-    * The LLM's raw reply is normalized against `choices` (case-insensitive,
+    * `classify`'s raw reply is normalized against `choices` (case-insensitive,
       whitespace/punct-stripped, single-word prefix match). If it does not
       map to any allowed choice, the attempt is treated as retryable.
-    * The whole attempt is wrapped in tenacity: 4 attempts total, exponential
-      backoff 1s -> 8s. On exhaustion, raises `ClassifyError`.
+    * `generate` skips the choice constraint entirely: it returns the raw
+      reply cleaned of surrounding quotes/punctuation and truncated to
+      `max_words` words. It still gets the same Groq->Gemini failover, but
+      only retries on transient (429/5xx) errors, since there is no
+      out-of-vocab concept for free-form text.
+    * Both are wrapped in tenacity: 4 attempts total, exponential backoff
+      1s -> 8s. On exhaustion, raises `ClassifyError`.
 
 Non-transient HTTP errors (401, 400, ...) are surfaced as httpx exceptions
 rather than swallowed, because they indicate a config bug, not a rate limit.
@@ -179,3 +185,47 @@ def classify(prompt: str, choices: list[str]) -> str:
         return _classify_once(prompt, list(choices))
     except (_TransientError, _OutOfVocabError) as exc:
         raise ClassifyError(str(exc)) from exc
+
+
+# --- Free-form generation ---------------------------------------------------
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type(_TransientError),
+    reraise=True,
+)
+def _generate_once(prompt: str) -> str:
+    """One retry-managed generation attempt: Groq first, Gemini on failover.
+
+    Unlike `_classify_once`, there is no vocabulary check, so the only
+    reason to retry is a transient (429/5xx) provider error.
+    """
+    try:
+        return _call_groq(prompt)
+    except _TransientError:
+        return _call_gemini(prompt)  # may re-raise _TransientError -> retry
+
+
+def _truncate_words(text: str, max_words: int) -> str:
+    words = text.split()
+    return " ".join(words[:max_words])
+
+
+def generate(prompt: str, *, max_words: int = 4) -> str:
+    """Generate a free-form reply to `prompt` (no choice constraint).
+
+    Reuses `classify`'s Groq-primary/Gemini-failover/retry machinery but
+    does not constrain the output to a fixed vocabulary. The raw reply is
+    stripped of surrounding whitespace/quotes/punctuation and truncated to
+    at most `max_words` words.
+
+    Raises `ClassifyError` after exhausting retries on transient errors.
+    """
+    try:
+        raw = _generate_once(prompt)
+    except _TransientError as exc:
+        raise ClassifyError(str(exc)) from exc
+    cleaned = raw.strip().strip("\"'`.,!?\n\r ")
+    return _truncate_words(cleaned, max_words)
