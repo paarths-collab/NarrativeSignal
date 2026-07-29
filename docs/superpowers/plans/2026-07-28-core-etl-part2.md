@@ -66,7 +66,7 @@ def test_narrative_id_is_cluster_underscore_domain(golden_clean_posts):
 
 
 def test_clusters_split_by_domain(golden_clean_posts):
-    """62 clusters span >1 domain; 131 clusters therefore yield 154 narratives."""
+    """22 clusters span >1 domain; 131 clusters therefore yield 154 narratives."""
     got = build_graph_edges(build_clusters_table(golden_clean_posts))
     assert got.cluster_id.nunique() == 131
     assert got.narrative_id.nunique() == 154

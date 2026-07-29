@@ -373,8 +373,9 @@ origin_subreddit  = subreddit of earliest post in group                        #
 hours_from_origin = (created_datetime - group.min()) / 3600                    # ✅
 ```
 
-62 clusters span multiple domains — that expansion is exactly why every Gen-B narrative
-table has 154 rows.
+**22** clusters span multiple domains (21 with two, 1 with three), so 109 + 21×2 + 1×3 =
+154. That expansion is exactly why every Gen-B narrative table has 154 rows. (62 clusters
+span multiple *URLs* — a different figure that must not be substituted here.)
 
 `narrative_intelligence_summary` ✅ all columns verified:
 ```python
@@ -593,9 +594,22 @@ new domain → in domain_categories.json?  ── yes → use cached category (f
 ```
 
 The cache persists on the `data-live` branch beside the artifacts, mirroring the existing
-`ai_cache.json` pattern. Cost decays fast: ~200 calls in week one, a handful per day by
-week three, since the political web has a long tail but a small head. Well inside free-tier
-limits (Groq allows 14,400 requests/day; the full nightly job needs ~180).
+`ai_cache.json` pattern. Cost decays fast: a handful of new domains per day after the first
+run, since the political web has a long tail but a small head. Well inside free-tier limits
+(Groq allows 14,400 requests/day; the full nightly job needs ~180).
+
+⚠️ **The seed must be the whole corpus, not the 41 domains CTDD exposes.** Measured during
+implementation: seeding from those 41 and regenerating gives a universe of 1,107 posts
+against the original 3,213, and the resulting echo-chamber scores do not merely drift —
+**the ranking inverts.** Anarchism falls from 26.70 (most insular) to 8.20 while neoliberal
+rises from 5.49 to 9.30. A rule-based blocklist does not rescue it either: excluding
+`self.*`, image hosts, shorteners and link-farms yields 4,718 posts, overshooting by 47%
+and unevenly (Anarchism 2.8× over target, politics 1.3×).
+
+So Workflow C's first run must categorize **all ~909 domains in the corpus**, not extend
+from 41 — roughly 909 one-time calls. Until that runs, `clean_top_distinctive_domains` and
+`echo_chamber_scores` are the only two artifacts that will not match the deployed site.
+The transform code is correct; the input is pending.
 
 Two consequences to accept:
 - `sub_total`'s denominator (currently the hardcoded `3213`) grows as the dict grows, so
