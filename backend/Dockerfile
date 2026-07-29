@@ -12,9 +12,10 @@ RUN pip install --upgrade pip \
     && pip install -r /app/requirements.txt
 
 COPY backend /app/backend
+COPY scripts /app/scripts
 COPY data /app/seed_data
 RUN mkdir -p /app/backend/outputs /app/backend/logs
-RUN chmod +x /app/backend/entrypoint.sh
+RUN chmod +x /app/backend/entrypoint.sh /app/scripts/fetch_data_live.sh
 
 WORKDIR /app/backend
 
